@@ -191,6 +191,16 @@ nor handle user authentication (that's `auth/`).
 
 This prevents the agent from accidentally mixing concerns across modules.
 
+### Hierarchy subdivision
+
+IA-docs files load **hierarchically** — parent to child along the file path. If a module has independent sub-systems, subdivide:
+
+1. Keep the parent doc as a concise overview (scope, architecture, shared conventions)
+2. Add a `## Sub-docs` table referencing child docs
+3. Each sub-system gets its own doc with specific details
+
+**Signal to subdivide:** The doc covers multiple independent sub-systems and exceeds 60 lines.
+
 ## Maintaining docs
 
 After significant code changes, use the `ia-docs-update` agent:
@@ -200,10 +210,10 @@ Use the ia-docs-update agent to check if any IA-docs need updating after my rece
 ```
 
 The agent:
-1. Runs `git diff` to detect what changed
-2. Reads affected IA-docs
-3. Evaluates if updates are needed
-4. Proposes changes (never writes directly)
+1. Reads the actual source code (code-first, always)
+2. Evaluates each doc point: correct & valuable, correct but excess, outdated, or missing
+3. Checks if code violates the rules documented in the hierarchy
+4. Proposes doc updates AND reports code violations
 5. Flags excess content for removal
 
 ## The agents
@@ -213,13 +223,70 @@ Both agents are **read-only proposers**. They analyze code and suggest documenta
 | Agent | Purpose | Tools |
 |-------|---------|-------|
 | `ia-docs-create` | Create new docs for modules that don't have one | Read, Grep, Glob |
-| `ia-docs-update` | Update existing docs after code changes | Read, Grep, Glob, Bash |
+| `ia-docs-update` | Audit and update existing docs after code changes | Read, Grep, Glob, Bash |
+
+### Agent capabilities
+
+The agents include several advanced features learned from production use:
+
+- **Cross-module exploration**: Agents search across the codebase (not just the target module) to understand relationships and purpose
+- **8-category pattern classification**: Systematic evaluation of paradigm, domain context, gotchas, dependencies, data, environment, integrations, and conventions
+- **Code violation detection**: The update agent verifies code compliance against the full doc hierarchy, reporting violations with file and line
+- **Claim verification**: Before documenting relationships with other modules, agents verify the claims by reading the actual code
+
+## Optional: Push audit hook
+
+The optional `trigger-ia-docs-audit.js` hook detects `git push` commands and reminds Claude to run the update agent for changed modules. This uses Node.js instead of bash to avoid a known `jq` gotcha (see below).
+
+Setup:
+```bash
+cp hooks/trigger-ia-docs-audit.js .claude/hooks/
+```
+
+Add to `.claude/settings.json` under `PostToolUse`:
+```json
+{
+  "matcher": "Bash",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "node $CLAUDE_PROJECT_DIR/.claude/hooks/trigger-ia-docs-audit.js"
+    }
+  ]
+}
+```
+
+## Known gotchas
+
+### jq treats `0` as falsy
+
+The `//` (alternative) operator in `jq` treats `0`, `false`, and `null` as falsy. This means:
+
+```bash
+# BUG: if exit_code is 0, jq discards it and returns "1"
+exit_code=$(echo "$input" | jq -r '.tool_response.exit_code // "1"')
+```
+
+The core hooks (`enforce-ia-docs.sh`, `notify-ia-docs-read.sh`) are not affected because they don't compare exit codes. But if you extend the hooks with exit code checks, use `if/then/else` in jq or switch to Node.js:
+
+```bash
+# Fix with jq
+exit_code=$(echo "$input" | jq -r 'if .tool_response.exit_code != null then (.tool_response.exit_code | tostring) else "1" end')
+```
+
+```javascript
+// Fix with Node.js (recommended for new hooks)
+const exitCode = data.tool_response?.exit_code ?? 1;
+```
+
+The push audit hook (`trigger-ia-docs-audit.js`) uses Node.js specifically to avoid this issue.
 
 ## Requirements
 
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code) (hooks require Claude Code's hook system)
 - `jq` (for JSON parsing in hooks — pre-installed on most systems)
 - `git` (for the update agent's diff analysis)
+- `node` (only if using the optional push audit hook)
 
 ## How it compares
 
